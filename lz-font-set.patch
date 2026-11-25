@@ -1,0 +1,1665 @@
+diff --git a/Cargo.lock b/Cargo.lock
+index 37181e0..21dcddf 100644
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -379,6 +379,15 @@ dependencies = [
+  "libc",
+ ]
+ 
++[[package]]
++name = "core_maths"
++version = "0.1.1"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "77745e017f5edba1a9c1d854f6f3a52dac8a12dd5af5d2f54aecf61e43d80d30"
++dependencies = [
++ "libm",
++]
++
+ [[package]]
+ name = "crc32fast"
+ version = "1.5.5"
+@@ -674,6 +683,29 @@ version = "0.1.5"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "d9c4f5dac5e15c24eb999c26181a6ca40b39fe946cbe4c263c7209467bc83af2"
+ 
++[[package]]
++name = "fontconfig-parser"
++version = "0.5.8"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "bbc773e24e02d4ddd8395fd30dc147524273a83e54e0f312d986ea30de5f5646"
++dependencies = [
++ "roxmltree",
++]
++
++[[package]]
++name = "fontdb"
++version = "0.23.0"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "457e789b3d1202543297a350643cf459f836cade38934e7a4cf6a39e7cde2905"
++dependencies = [
++ "fontconfig-parser",
++ "log",
++ "memmap2",
++ "slotmap",
++ "tinyvec",
++ "ttf-parser",
++]
++
+ [[package]]
+ name = "foreign-types"
+ version = "0.5.0"
+@@ -1203,6 +1235,12 @@ dependencies = [
+  "windows-link",
+ ]
+ 
++[[package]]
++name = "libm"
++version = "0.2.16"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "b6d2cec3eae94f9f509c767b45932f1ada8350c4bdb85af2fcab4a3c14807981"
++
+ [[package]]
+ name = "libredox"
+ version = "0.1.25"
+@@ -1260,6 +1298,8 @@ version = "0.2.0"
+ dependencies = [
+  "chrono",
+  "eframe",
++ "fontdb",
++ "ttf-parser",
+  "unicode-width 0.2.3",
+ ]
+ 
+@@ -1967,6 +2007,12 @@ version = "1.1.0"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "19b30a45b0cd0bcca8037f3d0dc3421eaf95327a17cad11964fb8179b4fc4832"
+ 
++[[package]]
++name = "roxmltree"
++version = "0.20.0"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "6c20b6793b5c2fa6553b250154b78d6d0db37e72700ae35fad9387a46f487c97"
++
+ [[package]]
+ name = "rustc-hash"
+ version = "1.1.0"
+@@ -2346,6 +2392,12 @@ dependencies = [
+  "zerovec",
+ ]
+ 
++[[package]]
++name = "tinyvec"
++version = "1.13.3"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "fd3ca314f692efd6c868f8408f53fe444634a845f96c028b97d35f6a1f79f0ee"
++
+ [[package]]
+ name = "tokio"
+ version = "1.54.1"
+@@ -2407,6 +2459,9 @@ name = "ttf-parser"
+ version = "0.25.1"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "d2df906b07856748fa3f6e0ad0cbaa047052d4a7dd609e231c4f72cee8c36f31"
++dependencies = [
++ "core_maths",
++]
+ 
+ [[package]]
+ name = "type-map"
+diff --git a/Cargo.toml b/Cargo.toml
+index 71919ed..feda3ad 100644
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -16,6 +16,8 @@ path = "src/main.rs"
+ [dependencies]
+ chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+ eframe = { version = "0.31", default-features = false, features = ["default_fonts", "glow", "wayland", "x11"] }
++fontdb = "0.23"
++ttf-parser = "0.25"
+ unicode-width = "0.2"
+ 
+ [profile.release]
+diff --git a/src/app.rs b/src/app.rs
+index 269ad42..d00b51a 100644
+--- a/src/app.rs
++++ b/src/app.rs
+@@ -4,8 +4,10 @@ use crate::filer::{
+     copy_entry, create_dir, create_file, delete_entry, format_size, move_entry, rename_entry,
+     ActivePane, FileEntry, FilerState,
+ };
+-use crate::fonts::configure_japanese_fonts;
++use crate::font_picker::{FontPicker, PickerOutcome};
++use crate::fonts::{self, FontSet};
+ use crate::markdown::{parse_markdown, render_markdown_view, MdBlock};
++use crate::settings;
+ use eframe::egui::{
+     self, Align2, Color32, CornerRadius, Event, FontId, ImeEvent, Key, Pos2, Rect, Sense, Stroke,
+     StrokeKind, Vec2,
+@@ -32,19 +34,19 @@ const BG_TAB_BAR: Color32 = Color32::from_rgb(9, 28, 66);
+ const BG_TAB_ACTIVE: Color32 = Color32::from_rgb(24, 66, 134);
+ const BG_TAB_INACTIVE: Color32 = Color32::from_rgb(12, 34, 78);
+ 
+-const BORDER_BLUE: Color32 = Color32::from_rgb(42, 98, 168);
++pub(crate) const BORDER_BLUE: Color32 = Color32::from_rgb(42, 98, 168);
+ const BORDER_ACTIVE_PANE: Color32 = Color32::from_rgb(90, 212, 255);
+ const GUTTER_SEP: Color32 = Color32::from_rgb(26, 62, 118);
+ 
+-const STATUS_BG: Color32 = Color32::from_rgb(15, 42, 92);
+-const STATUS_BADGE_BG: Color32 = Color32::from_rgb(64, 210, 255);
++pub(crate) const STATUS_BG: Color32 = Color32::from_rgb(15, 42, 92);
++pub(crate) const STATUS_BADGE_BG: Color32 = Color32::from_rgb(64, 210, 255);
+ const STATUS_BADGE_FILER_BG: Color32 = Color32::from_rgb(255, 206, 86);
+ const STATUS_BADGE_VIEW_BG: Color32 = Color32::from_rgb(56, 204, 152);
+-const STATUS_BADGE_FG: Color32 = Color32::from_rgb(6, 20, 48);
++pub(crate) const STATUS_BADGE_FG: Color32 = Color32::from_rgb(6, 20, 48);
+ 
+ const FKEY_BAR_BG: Color32 = Color32::from_rgb(10, 28, 64);
+-const FKEY_BTN_BG: Color32 = Color32::from_rgb(18, 48, 102);
+-const FKEY_BTN_HOVER: Color32 = Color32::from_rgb(30, 74, 148);
++pub(crate) const FKEY_BTN_BG: Color32 = Color32::from_rgb(18, 48, 102);
++pub(crate) const FKEY_BTN_HOVER: Color32 = Color32::from_rgb(30, 74, 148);
+ const FKEY_NUM_BG: Color32 = Color32::from_rgb(46, 140, 208);
+ const FKEY_NUM_FILER_BG: Color32 = Color32::from_rgb(36, 138, 168);
+ const FKEY_NUM_FG: Color32 = Color32::from_rgb(240, 250, 255);
+@@ -57,12 +59,12 @@ const FILER_ROW_CURSOR_INACTIVE: Color32 = Color32::from_rgb(16, 44, 92);
+ const FILER_ROW_MARKED: Color32 = Color32::from_rgb(62, 54, 18);
+ const FILER_ROW_MARKED_CURSOR: Color32 = Color32::from_rgb(88, 76, 24);
+ 
+-const TEXT_WHITE: Color32 = Color32::from_rgb(234, 244, 255);
+-const TEXT_CYAN: Color32 = Color32::from_rgb(112, 232, 255);
+-const TEXT_DIM_CYAN: Color32 = Color32::from_rgb(88, 146, 204);
++pub(crate) const TEXT_WHITE: Color32 = Color32::from_rgb(234, 244, 255);
++pub(crate) const TEXT_CYAN: Color32 = Color32::from_rgb(112, 232, 255);
++pub(crate) const TEXT_DIM_CYAN: Color32 = Color32::from_rgb(88, 146, 204);
+ const TEXT_CR_MARK: Color32 = Color32::from_rgb(56, 110, 168);
+ const TEXT_EOF: Color32 = Color32::from_rgb(76, 178, 224);
+-const TEXT_AMBER: Color32 = Color32::from_rgb(255, 220, 96);
++pub(crate) const TEXT_AMBER: Color32 = Color32::from_rgb(255, 220, 96);
+ 
+ const CURSOR_FILL: Color32 = Color32::from_rgba_premultiplied(80, 220, 255, 110);
+ const CURSOR_BAR: Color32 = Color32::from_rgb(120, 244, 255);
+@@ -183,6 +185,7 @@ enum MenuAction {
+     FontZoomIn,
+     FontZoomOut,
+     FontReset,
++    FontSettings,
+     NextBuffer,
+     // About
+     ShowHelp,
+@@ -297,6 +300,7 @@ pub struct LzEditorApp {
+     internal_clipboard: String,
+ 
+     // Rendering / scrolling state
++    font_set: FontSet,
+     font_size: f32,
+     line_height: f32,
+     need_scroll_to_cursor: bool,
+@@ -311,11 +315,13 @@ pub struct LzEditorApp {
+     pending_dialog: Option<Receiver<DialogResult>>,
+     inline_prompt: Option<InlinePathPrompt>,
+     filer_modal: Option<FilerModal>,
++    font_picker: Option<FontPicker>,
+ }
+ 
+ impl LzEditorApp {
+     pub fn new(cc: &eframe::CreationContext<'_>, initial_file: Option<PathBuf>) -> Self {
+-        configure_japanese_fonts(&cc.egui_ctx);
++        let font_set = settings::load();
++        let font_error = fonts::apply_or_auto(&cc.egui_ctx, &font_set);
+         Self::configure_visuals(&cc.egui_ctx);
+         // Disable egui's built-in Ctrl++/-/0 UI zoom so LZ Editor controls font scaling directly
+         // without double-scaling or breaking IME candidate window coordinates.
+@@ -354,6 +360,10 @@ impl LzEditorApp {
+             TextBuffer::new()
+         };
+ 
++        if let Some(e) = font_error {
++            status_message = format!("フォントを自動に切り替えました: {e}");
++        }
++
+         let mut app = Self {
+             mode: AppMode::Editor,
+             buffers: vec![BufferSlot::new(initial_buffer)],
+@@ -365,6 +375,7 @@ impl LzEditorApp {
+             ime_active: false,
+             last_window_title: String::new(),
+             internal_clipboard: String::new(),
++            font_set,
+             font_size: DEFAULT_FONT_SIZE,
+             line_height: calc_line_height(DEFAULT_FONT_SIZE),
+             need_scroll_to_cursor: false,
+@@ -377,6 +388,7 @@ impl LzEditorApp {
+             pending_dialog: None,
+             inline_prompt: None,
+             filer_modal: None,
++            font_picker: None,
+         };
+         app.sync_window_title(&cc.egui_ctx);
+         app
+@@ -440,6 +452,35 @@ impl LzEditorApp {
+         self.set_font_size(DEFAULT_FONT_SIZE);
+     }
+ 
++    // --- Font Set ---
++
++    fn open_font_picker(&mut self) {
++        self.show_help = false;
++        self.font_picker = Some(FontPicker::open(&self.font_set));
++    }
++
++    fn render_font_picker(&mut self, ctx: &egui::Context) {
++        let Some(picker) = &mut self.font_picker else {
++            return;
++        };
++        match picker.show(ctx) {
++            None => return,
++            Some(PickerOutcome::Cancel(set)) => {
++                self.font_set = set;
++                self.status_message = "フォント設定を取り消しました".to_string();
++            }
++            Some(PickerOutcome::Accept(set)) => {
++                self.font_set = set;
++                self.status_message = match settings::save(&self.font_set) {
++                    Ok(path) => format!("フォント設定を保存しました: {}", path.display()),
++                    Err(e) => format!("フォント設定を保存できません (今回だけ有効): {e}"),
++                };
++            }
++        }
++        self.font_picker = None;
++        self.need_scroll_to_cursor = true;
++    }
++
+     fn handle_font_zoom_key(&mut self, key: Key, modifiers: egui::Modifiers) -> bool {
+         let ctrl = modifiers.ctrl || modifiers.command;
+         if !ctrl || modifiers.alt {
+@@ -1070,6 +1111,12 @@ impl LzEditorApp {
+                     action: MenuAction::FontReset,
+                     enabled: true,
+                 },
++                MenuEntry::Item {
++                    label: "フォント設定...",
++                    shortcut: "^K^F",
++                    action: MenuAction::FontSettings,
++                    enabled: true,
++                },
+                 MenuEntry::Separator,
+                 MenuEntry::Item {
+                     label: "次のバッファへ切替",
+@@ -1156,6 +1203,7 @@ impl LzEditorApp {
+             MenuAction::FontZoomIn => self.zoom_in_font(),
+             MenuAction::FontZoomOut => self.zoom_out_font(),
+             MenuAction::FontReset => self.reset_font_size(),
++            MenuAction::FontSettings => self.open_font_picker(),
+             MenuAction::NextBuffer => {
+                 if self.mode != AppMode::Editor {
+                     self.enter_editor();
+@@ -1401,7 +1449,11 @@ impl LzEditorApp {
+     // --- Event Dispatch ---
+ 
+     fn handle_events(&mut self, ctx: &egui::Context) {
+-        if self.inline_prompt.is_some() || self.filer_modal.is_some() || self.show_about {
++        if self.inline_prompt.is_some()
++            || self.filer_modal.is_some()
++            || self.show_about
++            || self.font_picker.is_some()
++        {
+             return;
+         }
+         if self.open_menu.is_some() {
+@@ -1566,6 +1618,10 @@ impl LzEditorApp {
+                                 Key::V => {
+                                     self.toggle_markdown_view();
+                                 }
++                                Key::F => {
++                                    self.open_font_picker();
++                                    return;
++                                }
+                                 Key::Q => {
+                                     self.enter_filer();
+                                     return;
+@@ -1738,7 +1794,7 @@ impl LzEditorApp {
+                             Key::K => {
+                                 self.prefix = PrefixKey::CtrlK;
+                                 self.status_message =
+-                                    "^K  [D:保存  V:MDビュー切替  Q:ファイラー  ESC:取消]"
++                                    "^K  [D:保存  V:MDビュー切替  F:フォント  Q:ファイラー  ESC:取消]"
+                                         .to_string();
+                                 true
+                             }
+@@ -2982,6 +3038,7 @@ impl LzEditorApp {
+                 let response = ui.allocate_rect(avail_rect, Sense::click_and_drag());
+ 
+                 let font_id = FontId::monospace(self.font_size);
++                let row_h = ui.fonts(|f| f.row_height(&font_id));
+                 let gutter_font_size = (self.font_size * 0.875).max(9.0);
+                 let marker_font_size = (self.font_size * 0.875).max(9.0);
+ 
+@@ -3091,6 +3148,7 @@ impl LzEditorApp {
+                 if response.clicked()
+                     && self.open_menu.is_none()
+                     && !self.show_about
++                    && self.font_picker.is_none()
+                     && self.filer_modal.is_none()
+                     && self.inline_prompt.is_none()
+                 {
+@@ -3188,7 +3246,7 @@ impl LzEditorApp {
+                     );
+ 
+                     let text_origin_x = editor_rect.min.x + left_pad - scroll_x;
+-                    let text_y = y + (self.line_height - self.font_size) * 0.42;
++                    let text_y = y + (self.line_height - row_h) * 0.5;
+                     let line = &self.cur_buf().lines[line_idx];
+ 
+                     if is_current && !self.ime_preedit.is_empty() {
+@@ -3318,6 +3376,7 @@ impl LzEditorApp {
+                     && self.filer_modal.is_none()
+                     && self.open_menu.is_none()
+                     && !self.show_about
++                    && self.font_picker.is_none()
+                 {
+                     let preedit_start_x =
+                         editor_rect.min.x + left_pad + cursor_px_x - scroll_x;
+@@ -3826,6 +3885,7 @@ impl LzEditorApp {
+                         ("Ctrl+W / Ctrl+Shift+W", "複数バッファ（裏画面）切替"),
+                         ("Ctrl+P / Ctrl+K+V / Alt+P", "Markdown 編集 / ビュー（プレビュー）切替"),
+                         ("Ctrl++ / Ctrl+- / Ctrl+0", "フォントサイズ拡大 / 縮小 / リセット"),
++                        ("Ctrl+K+F", "フォント設定"),
+                         ("Ctrl+K+D / F10", "上書き保存 / 保存ダイアログ"),
+                         ("ESC / Ctrl+K+Q / F9", "2画面ファイラーへ切替"),
+                     ],
+@@ -4631,6 +4691,7 @@ impl eframe::App for LzEditorApp {
+         self.render_about_dialog(ctx);
+         self.render_filer_modal(ctx);
+         self.render_inline_path_prompt(ctx);
++        self.render_font_picker(ctx);
+ 
+         // Keep OS window title bar synchronized with current file, dirty state, or filer directory
+         self.sync_window_title(ctx);
+@@ -4660,6 +4721,7 @@ mod tests {
+             ime_active: false,
+             last_window_title: String::new(),
+             internal_clipboard: String::new(),
++            font_set: FontSet::default(),
+             font_size: DEFAULT_FONT_SIZE,
+             line_height: calc_line_height(DEFAULT_FONT_SIZE),
+             need_scroll_to_cursor: false,
+@@ -4672,6 +4734,7 @@ mod tests {
+             pending_dialog: None,
+             inline_prompt: None,
+             filer_modal: None,
++            font_picker: None,
+         }
+     }
+ 
+diff --git a/src/font_picker.rs b/src/font_picker.rs
+new file mode 100644
+index 0000000..722edb7
+--- /dev/null
++++ b/src/font_picker.rs
+@@ -0,0 +1,563 @@
++// SPDX-License-Identifier: MIT
++// === Claude origin ===
++// Created/placed by Anthropic Claude Code at: 2026-11-25-195800
++// フォントセット (英数字 + 日本語) の選択画面。選択中の組をその場で反映し、Enter で確定・ESC で元に戻す
++// ====================
++use crate::app::{
++    BORDER_BLUE, FKEY_BTN_BG, FKEY_BTN_HOVER, STATUS_BADGE_BG, STATUS_BADGE_FG, STATUS_BG,
++    TEXT_AMBER, TEXT_CYAN, TEXT_DIM_CYAN, TEXT_WHITE,
++};
++use crate::fonts::{self, AsciiChoice, FontEntry, FontRef, FontSet};
++use eframe::egui::{
++    self, Align2, Color32, CornerRadius, Event, FontId, Key, Rect, Sense, Stroke, StrokeKind, Vec2,
++};
++use std::sync::mpsc::{self, Receiver, TryRecvError};
++use std::thread;
++
++const ROW_H: f32 = 22.0;
++const LIST_W: f32 = 330.0;
++const VISIBLE_ROWS: usize = 12;
++const ROW_SELECTED: Color32 = Color32::from_rgb(28, 82, 156);
++const LIST_BG: Color32 = Color32::from_rgb(8, 24, 56);
++
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++enum Pane {
++    Ascii,
++    Ja,
++}
++
++impl Pane {
++    fn other(self) -> Self {
++        match self {
++            Pane::Ascii => Pane::Ja,
++            Pane::Ja => Pane::Ascii,
++        }
++    }
++}
++
++pub enum PickerOutcome {
++    Accept(FontSet),
++    Cancel(FontSet),
++}
++
++pub struct FontPicker {
++    entries: Vec<FontEntry>,
++    scan: Option<Receiver<Vec<FontEntry>>>,
++    original: FontSet,
++    /// Selection being edited.
++    current: FontSet,
++    /// Last set successfully handed to egui.
++    applied: FontSet,
++    pane: Pane,
++    mono_only: bool,
++    error: Option<String>,
++    scroll_to_selection: bool,
++    just_opened: bool,
++}
++
++impl FontPicker {
++    pub fn open(current: &FontSet) -> Self {
++        let (tx, rx) = mpsc::channel();
++        thread::spawn(move || {
++            let _ = tx.send(fonts::scan_fonts());
++        });
++        let mut picker = Self::with_entries(current, Vec::new());
++        picker.scan = Some(rx);
++        picker
++    }
++
++    fn with_entries(current: &FontSet, entries: Vec<FontEntry>) -> Self {
++        Self {
++            entries,
++            scan: None,
++            original: current.clone(),
++            current: current.clone(),
++            applied: current.clone(),
++            pane: Pane::Ja,
++            mono_only: false,
++            error: None,
++            scroll_to_selection: true,
++            just_opened: true,
++        }
++    }
++
++    fn poll_scan(&mut self) {
++        let Some(rx) = &self.scan else {
++            return;
++        };
++        match rx.try_recv() {
++            Ok(entries) => {
++                self.entries = entries;
++                self.scan = None;
++                self.scroll_to_selection = true;
++            }
++            Err(TryRecvError::Disconnected) => {
++                self.scan = None;
++                self.error = Some("フォントの一覧を取得できませんでした".to_string());
++            }
++            Err(TryRecvError::Empty) => {}
++        }
++    }
++
++    // --- List model: each pane has fixed "auto" rows followed by installed fonts ---
++
++    fn fixed_rows(pane: Pane) -> &'static [&'static str] {
++        match pane {
++            Pane::Ascii => &["自動", "日本語フォントの英数字を使う"],
++            Pane::Ja => &["自動"],
++        }
++    }
++
++    fn pane_fonts(&self, pane: Pane) -> Vec<&FontEntry> {
++        let mut list: Vec<&FontEntry> = self
++            .entries
++            .iter()
++            .filter(|e| match pane {
++                Pane::Ascii => e.ascii_mono,
++                Pane::Ja => e.has_ja && (!self.mono_only || e.ja_mono),
++            })
++            .collect();
++        if pane == Pane::Ascii {
++            // Latin-only coding fonts first (stable sort keeps names ordered)
++            list.sort_by_key(|e| e.has_ja);
++        }
++        list
++    }
++
++    fn row_count(&self, pane: Pane) -> usize {
++        Self::fixed_rows(pane).len() + self.pane_fonts(pane).len()
++    }
++
++    /// Row of the current selection; `None` while it is hidden by the filter or not scanned yet.
++    fn selected_row(&self, pane: Pane) -> Option<usize> {
++        let find = |f: &FontRef| {
++            self.pane_fonts(pane)
++                .iter()
++                .position(|e| e.font.path == f.path && e.font.index == f.index)
++                .map(|i| i + Self::fixed_rows(pane).len())
++        };
++        match pane {
++            Pane::Ja => self.current.ja.as_ref().map_or(Some(0), find),
++            Pane::Ascii => match &self.current.ascii {
++                AsciiChoice::Auto => Some(0),
++                AsciiChoice::SameAsJa => Some(1),
++                AsciiChoice::Font(f) => find(f),
++            },
++        }
++    }
++
++    fn select_row(&mut self, pane: Pane, row: usize) {
++        let fixed = Self::fixed_rows(pane).len();
++        let font = row
++            .checked_sub(fixed)
++            .and_then(|i| self.pane_fonts(pane).get(i).map(|e| e.font.clone()));
++        match pane {
++            Pane::Ja => self.current.ja = font,
++            Pane::Ascii => {
++                self.current.ascii = match (row, font) {
++                    (_, Some(f)) => AsciiChoice::Font(f),
++                    (1, None) => AsciiChoice::SameAsJa,
++                    _ => AsciiChoice::Auto,
++                }
++            }
++        }
++    }
++
++    fn move_selection(&mut self, delta: isize) {
++        let count = self.row_count(self.pane);
++        let row = self.selected_row(self.pane).unwrap_or(0) as isize;
++        let next = (row + delta).clamp(0, count as isize - 1) as usize;
++        self.select_row(self.pane, next);
++        self.scroll_to_selection = true;
++    }
++
++    // --- Input ---
++
++    fn handle_keys(&mut self, ctx: &egui::Context) -> Option<PickerOutcome> {
++        let page = VISIBLE_ROWS as isize - 1;
++        for event in ctx.input(|i| i.events.clone()) {
++            match event {
++                // egui_winit turns Ctrl+X into Event::Cut on Linux/Windows
++                Event::Cut => self.move_selection(1),
++                Event::Key {
++                    key,
++                    pressed: true,
++                    modifiers,
++                    ..
++                } => {
++                    let ctrl = modifiers.ctrl || modifiers.command;
++                    match key {
++                        Key::ArrowUp => self.move_selection(-1),
++                        Key::ArrowDown => self.move_selection(1),
++                        Key::PageUp => self.move_selection(-page),
++                        Key::PageDown => self.move_selection(page),
++                        Key::Home => self.move_selection(isize::MIN / 2),
++                        Key::End => self.move_selection(isize::MAX / 2),
++                        Key::E if ctrl => self.move_selection(-1),
++                        Key::X if ctrl => self.move_selection(1),
++                        Key::R if ctrl => self.move_selection(-page),
++                        Key::C if ctrl => self.move_selection(page),
++                        Key::ArrowLeft => self.pane = Pane::Ascii,
++                        Key::ArrowRight => self.pane = Pane::Ja,
++                        Key::S if ctrl => self.pane = Pane::Ascii,
++                        Key::D if ctrl => self.pane = Pane::Ja,
++                        Key::Tab => self.pane = self.pane.other(),
++                        Key::Space => self.current.align_half = !self.current.align_half,
++                        Key::M if !ctrl => self.toggle_mono_only(),
++                        Key::Enter => return Some(self.accept()),
++                        Key::Escape => return Some(self.cancel(ctx)),
++                        _ => {}
++                    }
++                }
++                _ => {}
++            }
++        }
++        None
++    }
++
++    fn toggle_mono_only(&mut self) {
++        self.mono_only = !self.mono_only;
++        self.scroll_to_selection = true;
++    }
++
++    fn accept(&self) -> PickerOutcome {
++        PickerOutcome::Accept(self.applied.clone())
++    }
++
++    fn cancel(&self, ctx: &egui::Context) -> PickerOutcome {
++        if self.applied != self.original {
++            let _ = fonts::apply_or_auto(ctx, &self.original);
++        }
++        PickerOutcome::Cancel(self.original.clone())
++    }
++
++    fn apply_if_changed(&mut self, ctx: &egui::Context) {
++        if self.current == self.applied {
++            return;
++        }
++        match fonts::apply(ctx, &self.current) {
++            Ok(_) => {
++                self.applied = self.current.clone();
++                self.error = None;
++            }
++            Err(e) => {
++                // Keep the previous fonts and the previous selection.
++                self.current = self.applied.clone();
++                self.error = Some(e);
++            }
++        }
++    }
++
++    // --- Rendering ---
++
++    pub fn show(&mut self, ctx: &egui::Context) -> Option<PickerOutcome> {
++        ctx.output_mut(|o| o.ime = None);
++        self.poll_scan();
++        if self.scan.is_some() {
++            ctx.request_repaint_after(std::time::Duration::from_millis(50));
++        }
++
++        // The Enter that opened this window from the menu must not close it in the same frame.
++        let mut outcome = if std::mem::take(&mut self.just_opened) {
++            None
++        } else {
++            self.handle_keys(ctx)
++        };
++        if outcome.is_some() {
++            return outcome;
++        }
++
++        egui::Window::new("フォント設定")
++            .collapsible(false)
++            .resizable(false)
++            .anchor(Align2::RIGHT_BOTTOM, Vec2::new(-16.0, -48.0))
++            .frame(
++                egui::Frame::window(&ctx.style())
++                    .fill(STATUS_BG)
++                    .stroke(Stroke::new(1.5_f32, TEXT_CYAN))
++                    .inner_margin(egui::Margin::same(10)),
++            )
++            .show(ctx, |ui| {
++                let text = |s: &str, color| {
++                    egui::RichText::new(s)
++                        .font(FontId::monospace(12.5))
++                        .color(color)
++                };
++                ui.horizontal(|ui| {
++                    self.show_list(ui, Pane::Ascii, "英数字 (半角)");
++                    self.show_list(ui, Pane::Ja, "日本語 (全角)");
++                });
++                self.scroll_to_selection = false;
++
++                ui.add_space(4.0);
++                ui.label(text(
++                    "Ilo0O 123 {}[]; |あいう漢字ｶﾅ| ABCDEFGHIJ|12345|あいうえお",
++                    TEXT_WHITE,
++                ));
++                ui.add_space(4.0);
++                ui.horizontal(|ui| {
++                    if toggle(ui, "半角:全角=1:2 (Space)", self.current.align_half) {
++                        self.current.align_half = !self.current.align_half;
++                    }
++                    if toggle(ui, "等幅の日本語だけ (M)", self.mono_only) {
++                        self.toggle_mono_only();
++                    }
++                });
++                ui.add_space(4.0);
++                ui.horizontal(|ui| {
++                    if button(ui, "決定 (Enter)") {
++                        outcome = Some(self.accept());
++                    }
++                    if button(ui, "取消 (ESC)") {
++                        outcome = Some(self.cancel(ctx));
++                    }
++                    if button(ui, "自動に戻す") {
++                        self.current = FontSet::default();
++                        self.scroll_to_selection = true;
++                    }
++                    match &self.error {
++                        Some(e) => ui.label(text(e, TEXT_AMBER)),
++                        None if self.scan.is_some() => {
++                            ui.label(text("フォントを調べています...", TEXT_AMBER))
++                        }
++                        None => ui.label(text("↑↓ 選択  ←→ 切替", TEXT_DIM_CYAN)),
++                    };
++                });
++            });
++
++        if outcome.is_none() {
++            self.apply_if_changed(ctx);
++        }
++        outcome
++    }
++
++    fn show_list(&mut self, ui: &mut egui::Ui, pane: Pane, title: &str) {
++        let active = self.pane == pane;
++        let selected = self.selected_row(pane);
++        let count = self.row_count(pane);
++        let mut clicked = None;
++
++        ui.vertical(|ui| {
++            ui.label(
++                egui::RichText::new(title)
++                    .font(FontId::monospace(13.0))
++                    .color(if active { TEXT_CYAN } else { TEXT_DIM_CYAN }),
++            );
++            let frame = egui::Frame::NONE.fill(LIST_BG).stroke(Stroke::new(
++                1.0_f32,
++                if active { TEXT_CYAN } else { BORDER_BLUE },
++            ));
++            frame.show(ui, |ui| {
++                ui.spacing_mut().item_spacing = Vec2::ZERO;
++                let mut area = egui::ScrollArea::vertical()
++                    .id_salt(title)
++                    .auto_shrink([false, false])
++                    .max_height(ROW_H * VISIBLE_ROWS as f32)
++                    .min_scrolled_height(ROW_H * VISIBLE_ROWS as f32);
++                if self.scroll_to_selection {
++                    let row = selected.unwrap_or(0) as f32;
++                    let top = (row - (VISIBLE_ROWS / 2) as f32).max(0.0) * ROW_H;
++                    area = area.vertical_scroll_offset(top);
++                }
++                ui.set_width(LIST_W);
++                area.show_rows(ui, ROW_H, count, |ui, range| {
++                    let fonts = self.pane_fonts(pane);
++                    let fixed = Self::fixed_rows(pane);
++                    for row in range {
++                        let (rect, resp) =
++                            ui.allocate_exact_size(Vec2::new(LIST_W, ROW_H), Sense::CLICK);
++                        if resp.clicked() {
++                            clicked = Some(row);
++                        }
++                        let (name, mono) = match row.checked_sub(fixed.len()) {
++                            None => (fixed[row], false),
++                            Some(i) => (fonts[i].font.name.as_str(), fonts[i].ja_mono),
++                        };
++                        paint_row(ui, rect, name, mono, selected == Some(row), resp.hovered());
++                    }
++                });
++            });
++        });
++
++        if let Some(row) = clicked {
++            self.pane = pane;
++            self.select_row(pane, row);
++        }
++    }
++}
++
++fn paint_row(ui: &egui::Ui, rect: Rect, name: &str, mono: bool, selected: bool, hovered: bool) {
++    let painter = ui.painter_at(rect);
++    if selected {
++        painter.rect_filled(rect, CornerRadius::ZERO, ROW_SELECTED);
++    } else if hovered {
++        painter.rect_filled(rect, CornerRadius::ZERO, FKEY_BTN_BG);
++    }
++    painter.text(
++        rect.left_center() + Vec2::new(8.0, 0.0),
++        Align2::LEFT_CENTER,
++        name,
++        FontId::monospace(13.0),
++        TEXT_WHITE,
++    );
++    if mono {
++        painter.text(
++            rect.right_center() - Vec2::new(14.0, 0.0),
++            Align2::RIGHT_CENTER,
++            "等幅",
++            FontId::monospace(11.0),
++            TEXT_DIM_CYAN,
++        );
++    }
++}
++
++/// Click-only (never takes keyboard focus, so Space/Enter/Tab stay with the picker).
++fn button(ui: &mut egui::Ui, label: &str) -> bool {
++    clickable(ui, label, FKEY_BTN_BG, TEXT_WHITE)
++}
++
++fn toggle(ui: &mut egui::Ui, label: &str, on: bool) -> bool {
++    let (mark, bg, fg) = if on {
++        ("ON ", STATUS_BADGE_BG, STATUS_BADGE_FG)
++    } else {
++        ("OFF", FKEY_BTN_BG, TEXT_WHITE)
++    };
++    clickable(ui, &format!("{mark} {label}"), bg, fg)
++}
++
++fn clickable(ui: &mut egui::Ui, label: &str, bg: Color32, fg: Color32) -> bool {
++    let galley = ui.fonts(|f| f.layout_no_wrap(label.to_string(), FontId::monospace(12.5), fg));
++    let size = galley.size() + Vec2::new(16.0, 8.0);
++    let (rect, resp) = ui.allocate_exact_size(size, Sense::CLICK);
++    let fill = if resp.hovered() && bg == FKEY_BTN_BG {
++        FKEY_BTN_HOVER
++    } else {
++        bg
++    };
++    ui.painter().rect(
++        rect,
++        CornerRadius::same(3),
++        fill,
++        Stroke::new(1.0_f32, BORDER_BLUE),
++        StrokeKind::Inside,
++    );
++    ui.painter()
++        .galley(rect.min + Vec2::new(8.0, 4.0), galley, fg);
++    resp.clicked()
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    use std::path::PathBuf;
++
++    fn entry(name: &str, has_ja: bool, ascii_mono: bool, ja_mono: bool) -> FontEntry {
++        FontEntry {
++            font: FontRef {
++                path: PathBuf::from(format!("/nonexistent/{name}")),
++                index: 0,
++                name: name.to_string(),
++            },
++            has_ja,
++            ascii_mono,
++            ja_mono,
++        }
++    }
++
++    fn picker() -> FontPicker {
++        FontPicker::with_entries(
++            &FontSet::default(),
++            vec![
++                entry("JaMono", true, true, true),
++                entry("JaProp", true, false, false),
++                entry("Latin", false, true, false),
++            ],
++        )
++    }
++
++    fn press(p: &mut FontPicker, key: Key) -> Option<PickerOutcome> {
++        let ctx = egui::Context::default();
++        let input = egui::RawInput {
++            events: vec![Event::Key {
++                key,
++                physical_key: None,
++                pressed: true,
++                repeat: false,
++                modifiers: egui::Modifiers::NONE,
++            }],
++            ..Default::default()
++        };
++        let mut out = None;
++        let _ = ctx.run(input, |ctx| out = p.handle_keys(ctx));
++        out
++    }
++
++    #[test]
++    fn test_lists_filter_and_selection() {
++        let mut p = picker();
++        assert_eq!(p.row_count(Pane::Ascii), 4); // auto, same, JaMono, Latin
++        assert_eq!(p.row_count(Pane::Ja), 3); // auto, JaMono, JaProp
++
++        press(&mut p, Key::ArrowDown);
++        press(&mut p, Key::ArrowDown);
++        assert_eq!(p.current.ja.as_ref().unwrap().name, "JaProp");
++        press(&mut p, Key::ArrowDown); // clamps at the end
++        assert_eq!(p.selected_row(Pane::Ja), Some(2));
++
++        // Hidden by the filter: the choice itself must survive
++        press(&mut p, Key::M);
++        assert_eq!(p.selected_row(Pane::Ja), None);
++        assert_eq!(p.current.ja.as_ref().unwrap().name, "JaProp");
++
++        press(&mut p, Key::Tab);
++        press(&mut p, Key::ArrowDown);
++        press(&mut p, Key::ArrowDown);
++        assert!(matches!(&p.current.ascii, AsciiChoice::Font(f) if f.name == "Latin"));
++        press(&mut p, Key::End);
++        assert!(matches!(&p.current.ascii, AsciiChoice::Font(f) if f.name == "JaMono"));
++        press(&mut p, Key::Home);
++        assert_eq!(p.current.ascii, AsciiChoice::Auto);
++        press(&mut p, Key::ArrowDown);
++        assert_eq!(p.current.ascii, AsciiChoice::SameAsJa);
++
++        press(&mut p, Key::Space);
++        assert!(!p.current.align_half);
++    }
++
++    #[test]
++    fn test_broken_font_keeps_previous_and_cancel_restores() {
++        let mut p = picker();
++        let ctx = egui::Context::default();
++        press(&mut p, Key::ArrowDown);
++        p.apply_if_changed(&ctx);
++        assert!(p.error.is_some());
++        assert_eq!(p.current, FontSet::default());
++        assert!(matches!(
++            press(&mut p, Key::Escape),
++            Some(PickerOutcome::Cancel(s)) if s == FontSet::default()
++        ));
++        assert!(matches!(press(&mut p, Key::Enter), Some(PickerOutcome::Accept(_))));
++    }
++
++    #[test]
++    fn test_opening_enter_does_not_close_the_picker() {
++        let mut p = picker();
++        let ctx = egui::Context::default();
++        let enter = egui::RawInput {
++            events: vec![Event::Key {
++                key: Key::Enter,
++                physical_key: None,
++                pressed: true,
++                repeat: false,
++                modifiers: egui::Modifiers::NONE,
++            }],
++            ..Default::default()
++        };
++        let mut first = None;
++        let _ = ctx.run(enter.clone(), |ctx| first = p.show(ctx));
++        assert!(first.is_none());
++        let mut second = None;
++        let _ = ctx.run(enter, |ctx| second = p.show(ctx));
++        assert!(matches!(second, Some(PickerOutcome::Accept(_))));
++    }
++}
+diff --git a/src/fonts.rs b/src/fonts.rs
+index ff40076..4262aba 100644
+--- a/src/fonts.rs
++++ b/src/fonts.rs
+@@ -1,7 +1,8 @@
+-use eframe::egui::{self, FontData, FontDefinitions, FontFamily};
+-use std::path::Path;
++use eframe::egui::{self, FontData, FontDefinitions, FontFamily, FontTweak};
++use std::path::{Path, PathBuf};
+ use std::process::Command;
+-use std::sync::Arc;
++use std::sync::{Arc, OnceLock};
++use ttf_parser::Face;
+ 
+ struct FontCandidate {
+     path: String,
+@@ -27,12 +28,13 @@ fn query_fc_match(pattern: &str) -> Option<FontCandidate> {
+     Some(FontCandidate { path, index })
+ }
+ 
+-/// Load a system Japanese monospace font into egui's font definitions to prevent tofu (missing glyphs).
+-pub fn configure_japanese_fonts(ctx: &egui::Context) -> Option<String> {
+-    let mut fonts = FontDefinitions::default();
+-    let mut loaded_names: Vec<String> = Vec::new();
+-    let mut seen_keys: Vec<(String, u32)> = Vec::new();
++/// Find a system Japanese font (monospace preferred) to prevent tofu (missing glyphs). Cached.
++pub fn auto_detect_ja() -> Option<FontRef> {
++    static CACHE: OnceLock<Option<FontRef>> = OnceLock::new();
++    CACHE.get_or_init(detect_ja).clone()
++}
+ 
++fn detect_ja() -> Option<FontRef> {
+     // Priority 1: Query fontconfig for Japanese monospace fonts (works on Ubuntu, Debian, Raspberry Pi OS).
+     // Prefer TrueType Japanese monospace fonts and Noto Sans Mono CJK JP.
+     let fc_patterns = [
+@@ -71,7 +73,8 @@ pub fn configure_japanese_fonts(ctx: &egui::Context) -> Option<String> {
+         }
+     }
+ 
+-    // Priority 2: Direct filesystem fallbacks for Ubuntu & Raspberry Pi OS.
++    // Priority 2: Direct filesystem fallbacks for Ubuntu, Raspberry Pi OS & macOS
++    // (apps launched from Finder have no `fc-match` in PATH).
+     let static_fallbacks: &[(&str, u32)] = &[
+         ("/usr/share/fonts/opentype/ipafont-gothic/ipag.ttf", 0),
+         ("/usr/share/fonts/truetype/vlgothic/VL-Gothic-Regular.ttf", 0),
+@@ -81,6 +84,8 @@ pub fn configure_japanese_fonts(ctx: &egui::Context) -> Option<String> {
+         ("/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc", 0),
+         ("/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc", 5),
+         ("/usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf", 0),
++        ("/System/Library/Fonts/ヒラギノ角ゴシック W3.ttc", 0),
++        ("/System/Library/Fonts/Supplemental/Arial Unicode.ttf", 0),
+     ];
+ 
+     for &(path, index) in static_fallbacks {
+@@ -92,44 +97,453 @@ pub fn configure_japanese_fonts(ctx: &egui::Context) -> Option<String> {
+         }
+     }
+ 
+-    let mut primary_loaded_path: Option<String> = None;
++    candidates
++        .into_iter()
++        .find_map(|c| usable_font(Path::new(&c.path), c.index, |m| m.ja_adv.is_some()))
++}
++
++/// System monospace font used for ASCII when the Japanese font is proportional. Cached.
++fn auto_detect_ascii() -> Option<FontRef> {
++    static CACHE: OnceLock<Option<FontRef>> = OnceLock::new();
++    CACHE
++        .get_or_init(|| {
++            [
++                "/System/Library/Fonts/Menlo.ttc",
++                "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf",
++                "/usr/share/fonts/truetype/liberation/LiberationMono-Regular.ttf",
++            ]
++            .into_iter()
++            .find_map(|p| usable_font(Path::new(p), 0, |m| m.ascii_mono))
++        })
++        .clone()
++}
++
++fn usable_font(path: &Path, index: u32, accept: fn(&FaceMetrics) -> bool) -> Option<FontRef> {
++    let bytes = std::fs::read(path).ok()?;
++    let face = Face::parse(&bytes, index).ok()?;
++    if !accept(&face_metrics(&face)?) {
++        return None;
++    }
++    let name = face_display_name(&face)
++        .or_else(|| path.file_stem().map(|s| s.to_string_lossy().into_owned()))?;
++    Some(FontRef {
++        path: path.to_path_buf(),
++        index,
++        name,
++    })
++}
++
++/// One face inside a font file.
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub struct FontRef {
++    pub path: PathBuf,
++    pub index: u32,
++    pub name: String,
++}
++
++#[derive(Debug, Clone, Default, PartialEq, Eq)]
++pub enum AsciiChoice {
++    /// Use the Japanese font's own ASCII glyphs if they are monospaced, otherwise a system monospace font.
++    #[default]
++    Auto,
++    SameAsJa,
++    Font(FontRef),
++}
++
++/// User-selectable pair of fonts (half-width ASCII + Japanese).
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub struct FontSet {
++    /// `None` = auto-detect
++    pub ja: Option<FontRef>,
++    pub ascii: AsciiChoice,
++    /// Scale the ASCII font so that two half-width cells equal one full-width cell.
++    pub align_half: bool,
++}
++
++impl Default for FontSet {
++    fn default() -> Self {
++        Self {
++            ja: None,
++            ascii: AsciiChoice::Auto,
++            align_half: true,
++        }
++    }
++}
++
++/// Entry shown in the font picker.
++#[derive(Debug, Clone)]
++pub struct FontEntry {
++    pub font: FontRef,
++    pub has_ja: bool,
++    /// All printable ASCII glyphs share one advance width.
++    pub ascii_mono: bool,
++    /// Full-width advance is exactly twice the (monospaced) ASCII advance.
++    pub ja_mono: bool,
++}
++
++#[derive(Debug, Clone, Copy)]
++struct FaceMetrics {
++    ascent: f32,
++    descent: f32,
++    ascii_adv: Option<f32>,
++    ja_adv: Option<f32>,
++    ascii_mono: bool,
++    ja_mono: bool,
++}
++
++/// Metrics in em units. `None` if egui could not use the face (no outlines, broken tables, ...).
++fn face_metrics(face: &Face<'_>) -> Option<FaceMetrics> {
++    let upem = f32::from(face.units_per_em());
++    let ascent = f32::from(face.ascender()) / upem;
++    let descent = f32::from(face.descender()) / upem;
++    if ascent - descent <= 0.0 {
++        return None;
++    }
++
++    let advance = |c: char| -> Option<f32> {
++        let id = face.glyph_index(c)?;
++        Some(f32::from(face.glyph_hor_advance(id)?) / upem)
++    };
++    let has_outline = |c: char| -> bool {
++        struct Sink;
++        impl ttf_parser::OutlineBuilder for Sink {
++            fn move_to(&mut self, _: f32, _: f32) {}
++            fn line_to(&mut self, _: f32, _: f32) {}
++            fn quad_to(&mut self, _: f32, _: f32, _: f32, _: f32) {}
++            fn curve_to(&mut self, _: f32, _: f32, _: f32, _: f32, _: f32, _: f32) {}
++            fn close(&mut self) {}
++        }
++        face.glyph_index(c)
++            .and_then(|id| face.outline_glyph(id, &mut Sink))
++            .is_some()
++    };
++
++    let ascii_adv = advance('M').filter(|w| *w > 0.0 && has_outline('M'));
++    let ascii_mono = ascii_adv.is_some_and(|m| {
++        (' '..='~').all(|c| advance(c).is_some_and(|w| (w - m).abs() < 0.005))
++    });
++    let ja_adv = advance('あ').filter(|w| *w > 0.0 && has_outline('あ') && has_outline('ア'));
++    let ja_mono = ascii_mono
++        && matches!((ascii_adv, ja_adv), (Some(a), Some(j)) if (j - 2.0 * a).abs() < 0.01)
++        && advance('漢').is_some_and(|w| ja_adv.is_some_and(|j| (w - j).abs() < 0.005));
+ 
+-    for (i, cand) in candidates.into_iter().enumerate() {
+-        let key = (cand.path.clone(), cand.index);
+-        if seen_keys.contains(&key) {
++    if ascii_adv.is_none() && ja_adv.is_none() {
++        return None;
++    }
++    Some(FaceMetrics {
++        ascent,
++        descent,
++        ascii_adv,
++        ja_adv,
++        ascii_mono,
++        ja_mono,
++    })
++}
++
++/// Full face name (name ID 4), preferring Japanese, then English.
++fn face_display_name(face: &Face<'_>) -> Option<String> {
++    let mut fallback = None;
++    for name in face.names() {
++        if name.name_id != ttf_parser::name_id::FULL_NAME || !name.is_unicode() {
+             continue;
+         }
+-        if let Ok(bytes) = std::fs::read(&cand.path) {
+-            seen_keys.push(key);
+-            let font_name = format!("ja_font_{i}");
+-            let mut font_data = FontData::from_owned(bytes);
+-            font_data.index = cand.index;
+-            fonts.font_data.insert(font_name.clone(), Arc::new(font_data));
+-            loaded_names.push(font_name);
+-            if primary_loaded_path.is_none() {
+-                primary_loaded_path = Some(format!("{} (index {})", cand.path, cand.index));
++        let Some(text) = name.to_string().filter(|s| !s.trim().is_empty()) else {
++            continue;
++        };
++        match name.language() {
++            ttf_parser::Language::Japanese_Japan => return Some(text),
++            ttf_parser::Language::English_UnitedStates => fallback = Some(text),
++            _ => {
++                fallback.get_or_insert(text);
+             }
+-            // Loading the single best Japanese monospace font keeps startup instant and RAM minimal.
+-            if !loaded_names.is_empty() {
+-                break;
++        }
++    }
++    fallback
++}
++
++/// Enumerate installed fonts that can serve as the Japanese font or the ASCII font.
++/// Takes a moment (parses every installed font), so call it from a worker thread.
++pub fn scan_fonts() -> Vec<FontEntry> {
++    let mut db = fontdb::Database::new();
++    db.load_system_fonts();
++
++    let mut entries: Vec<FontEntry> = Vec::new();
++    for info in db.faces() {
++        if info.style != fontdb::Style::Normal || info.post_script_name.starts_with('.') {
++            continue;
++        }
++        let path = match &info.source {
++            fontdb::Source::File(p) | fontdb::Source::SharedFile(p, _) => p.clone(),
++            fontdb::Source::Binary(_) => continue,
++        };
++        let family = info.families.first().map(|f| f.0.clone()).unwrap_or_default();
++        if family.starts_with('.') {
++            continue;
++        }
++        let parsed = db.with_face_data(info.id, |data, index| {
++            let face = Face::parse(data, index).ok()?;
++            let metrics = face_metrics(&face)?;
++            Some((metrics, face_display_name(&face)))
++        });
++        let Some((m, full_name)) = parsed.flatten() else {
++            continue;
++        };
++        let has_ja = m.ja_adv.is_some();
++        if !has_ja && !m.ascii_mono {
++            continue;
++        }
++        entries.push(FontEntry {
++            font: FontRef {
++                path,
++                index: info.index,
++                name: full_name.unwrap_or(family),
++            },
++            has_ja,
++            ascii_mono: m.ascii_mono,
++            ja_mono: m.ja_mono,
++        });
++    }
++    entries.sort_by(|a, b| {
++        (!a.ja_mono, &a.font.name, &a.font.path, a.font.index).cmp(&(
++            !b.ja_mono,
++            &b.font.name,
++            &b.font.path,
++            b.font.index,
++        ))
++    });
++    entries.dedup_by(|a, b| a.font.name == b.font.name);
++    entries
++}
++
++struct LoadedFace {
++    bytes: Vec<u8>,
++    index: u32,
++    metrics: FaceMetrics,
++}
++
++fn load_face(font: &FontRef) -> Result<LoadedFace, String> {
++    let mut bytes = std::fs::read(&font.path).map_err(|e| format!("{}: {e}", font.name))?;
++    zero_line_gap(&mut bytes, font.index);
++    let metrics = Face::parse(&bytes, font.index)
++        .ok()
++        .and_then(|face| face_metrics(&face))
++        .ok_or_else(|| format!("{}: 使えない形式のフォントです", font.name))?;
++    Ok(LoadedFace {
++        bytes,
++        index: font.index,
++        metrics,
++    })
++}
++
++/// Some fonts (e.g. Hiragino) declare a large line gap, which makes every row and button taller.
++/// LZ Editor has its own line height, so drop the gap from the in-memory copy.
++fn zero_line_gap(bytes: &mut [u8], index: u32) {
++    for (tag, field) in [(b"hhea", 8usize), (b"OS/2", 72usize)] {
++        if let Some(table) = table_offset(bytes, index, tag) {
++            if let Some(gap) = bytes.get_mut(table + field..table + field + 2) {
++                gap.fill(0);
+             }
+         }
+     }
++}
++
++fn table_offset(bytes: &[u8], index: u32, tag: &[u8; 4]) -> Option<usize> {
++    let u16_at = |p: usize| Some(u16::from_be_bytes(bytes.get(p..p + 2)?.try_into().ok()?));
++    let u32_at = |p: usize| Some(u32::from_be_bytes(bytes.get(p..p + 4)?.try_into().ok()?));
++    let base = if bytes.starts_with(b"ttcf") {
++        u32_at(12 + 4 * index as usize)? as usize
++    } else {
++        0
++    };
++    let count = u16_at(base + 4)? as usize;
++    (0..count).find_map(|i| {
++        let record = base + 12 + 16 * i;
++        if bytes.get(record..record + 4)? != tag {
++            return None;
++        }
++        u32_at(record + 8).map(|o| o as usize)
++    })
++}
+ 
+-    // Insert loaded Japanese fonts at the front of Monospace and Proportional font families.
+-    for (pos, name) in loaded_names.iter().enumerate() {
+-        fonts
+-            .families
+-            .entry(FontFamily::Monospace)
+-            .or_default()
+-            .insert(pos, name.clone());
+-        fonts
+-            .families
+-            .entry(FontFamily::Proportional)
+-            .or_default()
+-            .insert(pos, name.clone());
++/// Match the ASCII font to the Japanese font: 1:2 cell width and a shared baseline.
++fn ascii_tweak(ascii: &FaceMetrics, ja: &FaceMetrics, align_half: bool) -> FontTweak {
++    let scale = match (ascii.ascii_adv, ja.ja_adv) {
++        (Some(a), Some(j)) if align_half => (j * 0.5 / a).clamp(0.5, 1.5),
++        _ => 1.0,
++    };
++    // egui centers fallback fonts inside the first font's row, so the Japanese baseline is at:
++    let row_h = ascii.ascent - ascii.descent;
++    let ja_baseline = 0.5 * row_h + 0.5 * (ja.ascent + ja.descent);
++    // egui itself shifts scaled glyphs by (1 - scale) * 0.5 * (ascent + descent); undo that here.
++    let egui_shift = (1.0 - scale) * 0.5 * (ascii.ascent + ascii.descent);
++    FontTweak {
++        scale,
++        y_offset_factor: (ja_baseline - ascii.ascent + egui_shift) / (row_h * scale),
++        ..Default::default()
+     }
++}
++
++fn to_font_data(face: LoadedFace, tweak: FontTweak) -> Arc<FontData> {
++    let mut data = FontData::from_owned(face.bytes);
++    data.index = face.index;
++    data.tweak = tweak;
++    Arc::new(data)
++}
+ 
++/// Build egui font definitions. Every face is validated first because egui panics on broken fonts.
++fn build_definitions(set: &FontSet) -> Result<(FontDefinitions, String), String> {
++    let auto_ja = auto_detect_ja();
++    let ja_ref = set.ja.clone().or_else(|| auto_ja.clone());
++    let ja = ja_ref.as_ref().map(load_face).transpose()?;
++
++    let ascii_ref = match &set.ascii {
++        AsciiChoice::Font(f) => Some(f.clone()),
++        AsciiChoice::SameAsJa => None,
++        AsciiChoice::Auto => match &ja {
++            Some(face) if !face.metrics.ascii_mono => auto_detect_ascii(),
++            _ => None,
++        },
++    };
++    let ascii = ascii_ref.as_ref().map(load_face).transpose()?;
++
++    let mut fonts = FontDefinitions::default();
++    let mut order: Vec<String> = Vec::new();
++    let mut add = |fonts: &mut FontDefinitions, key: &str, data: Arc<FontData>| {
++        fonts.font_data.insert(key.to_string(), data);
++        order.push(key.to_string());
++    };
++
++    let label = match (&ascii_ref, &ja_ref) {
++        (Some(a), Some(j)) => format!("{} + {}", a.name, j.name),
++        (None, Some(j)) => j.name.clone(),
++        (Some(a), None) => a.name.clone(),
++        (None, None) => "内蔵フォント".to_string(),
++    };
++
++    if let Some(face) = ascii {
++        let tweak = match &ja {
++            Some(ja) => ascii_tweak(&face.metrics, &ja.metrics, set.align_half),
++            None => FontTweak::default(),
++        };
++        add(&mut fonts, "lz_ascii", to_font_data(face, tweak));
++    }
++    if let Some(face) = ja {
++        add(&mut fonts, "lz_ja", to_font_data(face, FontTweak::default()));
++    }
++    // Keep the auto-detected font as a fallback when the chosen one lacks some glyphs.
++    if let Some(auto) = auto_ja.filter(|f| set.ja.as_ref().is_some_and(|j| j.path != f.path)) {
++        if let Ok(face) = load_face(&auto) {
++            add(&mut fonts, "lz_ja_fallback", to_font_data(face, FontTweak::default()));
++        }
++    }
++
++    for family in [FontFamily::Monospace, FontFamily::Proportional] {
++        let list = fonts.families.entry(family).or_default();
++        list.splice(0..0, order.iter().cloned());
++    }
++    Ok((fonts, label))
++}
++
++/// Install the font set into egui. On error nothing changes.
++pub fn apply(ctx: &egui::Context, set: &FontSet) -> Result<String, String> {
++    let (fonts, label) = build_definitions(set)?;
+     ctx.set_fonts(fonts);
+-    primary_loaded_path
++    Ok(label)
++}
++
++/// Apply the saved set at startup; fall back to auto-detection if a saved font is unusable.
++pub fn apply_or_auto(ctx: &egui::Context, set: &FontSet) -> Option<String> {
++    let err = apply(ctx, set).err()?;
++    let _ = apply(ctx, &FontSet::default());
++    Some(err)
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    fn width(ctx: &egui::Context, text: &str, size: f32) -> f32 {
++        ctx.fonts(|f| {
++            f.layout_no_wrap(
++                text.to_string(),
++                egui::FontId::monospace(size),
++                egui::Color32::WHITE,
++            )
++            .size()
++            .x
++        })
++    }
++
++    fn run_frame(ctx: &egui::Context, ppp: f32) {
++        let mut input = egui::RawInput::default();
++        input
++            .viewports
++            .get_mut(&egui::ViewportId::ROOT)
++            .unwrap()
++            .native_pixels_per_point = Some(ppp);
++        let _ = ctx.run(input, |_| {});
++    }
++
++    #[test]
++    fn test_scanned_fonts_are_usable_and_aligned() {
++        let entries = scan_fonts();
++        let ja: Vec<_> = entries.iter().filter(|e| e.has_ja).collect();
++        let ascii: Vec<_> = entries.iter().filter(|e| e.ascii_mono && !e.has_ja).collect();
++        println!("fonts: {} ja: {} ascii: {}", entries.len(), ja.len(), ascii.len());
++
++        // Every listed Japanese font must load without panicking inside egui and draw real glyphs.
++        for e in &ja {
++            let ctx = egui::Context::default();
++            let set = FontSet {
++                ja: Some(e.font.clone()),
++                ..Default::default()
++            };
++            apply(&ctx, &set).unwrap_or_else(|err| panic!("{err}"));
++            run_frame(&ctx, 2.0);
++            assert!(width(&ctx, "あ漢", 16.0) > 0.0, "{}", e.font.name);
++        }
++
++        // With align_half, 2 ASCII cells must equal 1 full-width cell at common sizes.
++        let Some(j) = ja.iter().find(|e| e.ja_mono).or(ja.first()) else {
++            return;
++        };
++        for (a, ppp) in ascii.iter().flat_map(|a| [(a, 1.0), (a, 2.0)]) {
++            let ctx = egui::Context::default();
++            let set = FontSet {
++                ja: Some(j.font.clone()),
++                ascii: AsciiChoice::Font(a.font.clone()),
++                align_half: true,
++            };
++            apply(&ctx, &set).unwrap();
++            run_frame(&ctx, ppp);
++            for size in [12.0, 16.0, 20.0, 24.0, 36.0] {
++                let half = width(&ctx, &"a".repeat(40), size);
++                let full = width(&ctx, &"あ".repeat(20), size);
++                // Only the last glyph's sub-pixel advance may differ; per-glyph drift would be >= 20pt.
++                assert!(
++                    (half - full).abs() < 0.5,
++                    "{} + {} at {size}pt x{ppp}: {half} vs {full}",
++                    a.font.name,
++                    j.font.name
++                );
++            }
++        }
++    }
++
++    #[test]
++    fn test_unusable_font_is_rejected_without_panic() {
++        let ctx = egui::Context::default();
++        let bogus = FontRef {
++            path: PathBuf::from("/nonexistent/font.ttf"),
++            index: 0,
++            name: "missing".to_string(),
++        };
++        let set = FontSet {
++            ja: Some(bogus),
++            ..Default::default()
++        };
++        assert!(apply(&ctx, &set).is_err());
++        assert!(apply_or_auto(&ctx, &set).is_some());
++        run_frame(&ctx, 1.0);
++    }
+ }
+diff --git a/src/main.rs b/src/main.rs
+index d8c0a63..9d1c541 100644
+--- a/src/main.rs
++++ b/src/main.rs
+@@ -2,9 +2,11 @@ mod app;
+ mod buffer;
+ mod dialog;
+ mod filer;
++mod font_picker;
+ mod fonts;
+ mod icon;
+ mod markdown;
++mod settings;
+ 
+ use app::LzEditorApp;
+ use eframe::egui;
+diff --git a/src/settings.rs b/src/settings.rs
+new file mode 100644
+index 0000000..ec5f6f3
+--- /dev/null
++++ b/src/settings.rs
+@@ -0,0 +1,144 @@
++// SPDX-License-Identifier: MIT
++// === Claude origin ===
++// Created/placed by Anthropic Claude Code at: 2026-11-25-195400
++// フォントセットの選択を OS 標準の設定フォルダに保存・復元する
++// ====================
++use crate::fonts::{AsciiChoice, FontRef, FontSet};
++use std::fs;
++use std::io;
++use std::path::{Path, PathBuf};
++
++const SETTINGS_FILE: &str = "settings.conf";
++
++/// Settings directory: `LZ_CONFIG_DIR` if set, otherwise the per-OS standard location.
++pub fn config_dir() -> Option<PathBuf> {
++    if let Some(dir) = std::env::var_os("LZ_CONFIG_DIR") {
++        if !dir.is_empty() {
++            return Some(PathBuf::from(dir));
++        }
++    }
++    let home = std::env::var_os("HOME").map(PathBuf::from)?;
++    #[cfg(target_os = "macos")]
++    {
++        Some(home.join("Library/Application Support/LZ Editor"))
++    }
++    #[cfg(not(target_os = "macos"))]
++    {
++        let base = std::env::var_os("XDG_CONFIG_HOME")
++            .map(PathBuf::from)
++            .filter(|p| p.is_absolute())
++            .unwrap_or_else(|| home.join(".config"));
++        Some(base.join("lz-editor"))
++    }
++}
++
++pub fn load() -> FontSet {
++    config_dir().map(|d| load_from(&d)).unwrap_or_default()
++}
++
++pub fn save(set: &FontSet) -> io::Result<PathBuf> {
++    let dir = config_dir()
++        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "設定フォルダが見つかりません"))?;
++    save_to(&dir, set)
++}
++
++pub fn load_from(dir: &Path) -> FontSet {
++    let mut set = FontSet::default();
++    let Ok(text) = fs::read_to_string(dir.join(SETTINGS_FILE)) else {
++        return set;
++    };
++    for line in text.lines() {
++        let Some((key, value)) = line.split_once('=') else {
++            continue;
++        };
++        let value = value.trim();
++        match key.trim() {
++            "font.ja" => set.ja = decode_font(value),
++            "font.ascii" => {
++                set.ascii = match value {
++                    "same" => AsciiChoice::SameAsJa,
++                    _ => decode_font(value).map_or(AsciiChoice::Auto, AsciiChoice::Font),
++                }
++            }
++            "font.align_half" => set.align_half = value != "false",
++            _ => {}
++        }
++    }
++    set
++}
++
++pub fn save_to(dir: &Path, set: &FontSet) -> io::Result<PathBuf> {
++    fs::create_dir_all(dir)?;
++    let ascii = match &set.ascii {
++        AsciiChoice::Auto => "auto".to_string(),
++        AsciiChoice::SameAsJa => "same".to_string(),
++        AsciiChoice::Font(f) => encode_font(f),
++    };
++    let ja = set.ja.as_ref().map_or("auto".to_string(), encode_font);
++    let text = format!(
++        "# LZ Editor settings\nfont.ja={ja}\nfont.ascii={ascii}\nfont.align_half={}\n",
++        set.align_half
++    );
++    let path = dir.join(SETTINGS_FILE);
++    let tmp = dir.join(format!("{SETTINGS_FILE}.tmp"));
++    fs::write(&tmp, text)?;
++    fs::rename(&tmp, &path)?;
++    Ok(path)
++}
++
++/// `<face index>|<display name>|<path>` (the path comes last because it may contain `|`)
++fn encode_font(f: &FontRef) -> String {
++    let name = f.name.replace(['|', '\n', '\r'], " ");
++    format!("{}|{}|{}", f.index, name, f.path.display())
++}
++
++fn decode_font(value: &str) -> Option<FontRef> {
++    let mut parts = value.splitn(3, '|');
++    let index = parts.next()?.trim().parse().ok()?;
++    let name = parts.next()?.to_string();
++    let path = PathBuf::from(parts.next()?);
++    if path.as_os_str().is_empty() {
++        return None;
++    }
++    Some(FontRef { path, index, name })
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    fn temp_dir(tag: &str) -> PathBuf {
++        std::env::temp_dir().join(format!("lz-settings-{tag}-{}", std::process::id()))
++    }
++
++    #[test]
++    fn test_font_set_round_trip() {
++        let dir = temp_dir("roundtrip");
++        let set = FontSet {
++            ja: Some(FontRef {
++                path: PathBuf::from("/fonts/日本語 フォント|1.ttc"),
++                index: 2,
++                name: "ヒラギノ角ゴシック W3".to_string(),
++            }),
++            ascii: AsciiChoice::SameAsJa,
++            align_half: false,
++        };
++        save_to(&dir, &set).unwrap();
++        assert_eq!(load_from(&dir), set);
++
++        let auto = FontSet::default();
++        save_to(&dir, &auto).unwrap();
++        assert_eq!(load_from(&dir), auto);
++        fs::remove_dir_all(&dir).unwrap();
++    }
++
++    #[test]
++    fn test_missing_or_broken_settings_fall_back_to_auto() {
++        let dir = temp_dir("broken");
++        assert_eq!(load_from(&dir), FontSet::default());
++        fs::create_dir_all(&dir).unwrap();
++        fs::write(dir.join(SETTINGS_FILE), "font.ja=xx\nfont.ascii=1|a|\nnoise\n").unwrap();
++        assert_eq!(load_from(&dir), FontSet::default());
++        fs::remove_dir_all(&dir).unwrap();
++    }
++}

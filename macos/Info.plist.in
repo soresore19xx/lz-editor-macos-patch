@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Claude origin: created by Anthropic Claude Code at 2026-11-25-200600. Template used by scripts/package_macos.sh -->
+<plist version="1.0">
+<dict>
+	<key>CFBundleName</key>
+	<string>LZ Editor</string>
+	<key>CFBundleDisplayName</key>
+	<string>LZ Editor</string>
+	<key>CFBundleIdentifier</key>
+	<string>com.hogehoge.lz-editor</string>
+	<key>CFBundleExecutable</key>
+	<string>lz</string>
+	<key>CFBundleIconFile</key>
+	<string>lz-editor</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleShortVersionString</key>
+	<string>@VERSION@</string>
+	<key>CFBundleVersion</key>
+	<string>@VERSION@</string>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>ja</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>11.0</string>
+	<key>LSApplicationCategoryType</key>
+	<string>public.app-category.productivity</string>
+	<key>NSHighResolutionCapable</key>
+	<true/>
+	<key>NSHumanReadableCopyright</key>
+	<string>MIT License (c) 2026 Touryu Tamane / unofficial macOS build</string>
+	<key>NSDesktopFolderUsageDescription</key>
+	<string>デスクトップのファイルを開く・保存するために使います。</string>
+	<key>NSDocumentsFolderUsageDescription</key>
+	<string>書類フォルダのファイルを開く・保存するために使います。</string>
+	<key>NSDownloadsFolderUsageDescription</key>
+	<string>ダウンロードフォルダのファイルを開く・保存するために使います。</string>
+	<key>NSRemovableVolumesUsageDescription</key>
+	<string>外部ディスクのファイルを開く・保存するために使います。</string>
+	<key>NSNetworkVolumesUsageDescription</key>
+	<string>ネットワークディスクのファイルを開く・保存するために使います。</string>
+</dict>
+</plist>

@@ -1,0 +1,42 @@
+diff --git a/src/main.rs b/src/main.rs
+index d8c0a63..cf38cde 100644
+--- a/src/main.rs
++++ b/src/main.rs
+@@ -11,14 +11,36 @@ use eframe::egui;
+ use std::path::PathBuf;
+ use std::sync::Arc;
+ 
++/// Inside an app bundle the high-resolution .icns is used, so do not override it with the 64x64 icon.
++fn app_icon() -> egui::IconData {
++    let bundled = cfg!(target_os = "macos")
++        && std::env::current_exe().is_ok_and(|p| {
++            p.ancestors()
++                .any(|a| a.extension().is_some_and(|e| e == "app"))
++        });
++    if bundled {
++        egui::IconData::default()
++    } else {
++        icon::build_app_icon()
++    }
++}
++
+ fn main() -> eframe::Result<()> {
+     let initial_file = std::env::args_os().nth(1).map(PathBuf::from);
+ 
++    // Apps launched from Finder start in "/"; begin in the home folder like other Mac apps.
++    #[cfg(target_os = "macos")]
++    if std::env::current_dir().is_ok_and(|d| d.parent().is_none()) {
++        if let Some(home) = std::env::var_os("HOME") {
++            let _ = std::env::set_current_dir(home);
++        }
++    }
++
+     let native_options = eframe::NativeOptions {
+         viewport: egui::ViewportBuilder::default()
+             .with_app_id("lz-editor")
+             .with_title("LZ Editor")
+-            .with_icon(Arc::new(icon::build_app_icon()))
++            .with_icon(Arc::new(app_icon()))
+             .with_inner_size([1024.0, 680.0])
+             .with_min_inner_size([640.0, 400.0]),
+         ..Default::default()
